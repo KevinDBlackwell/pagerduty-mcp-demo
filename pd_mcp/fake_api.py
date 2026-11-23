@@ -45,7 +45,7 @@ SERVICES = [
 ]
 
 ONCALLS = [
-    # Ana is on level 1 through two schedules: the tool should list her once.
+    # Ana is on level 1 via two schedules, should be listed once
     {"escalation_policy": ref("escalation_policy", "PEP0001", "Payments EP"), "escalation_level": 1,
      "schedule": ref("schedule", "PSCH001", "Payments Primary"), "user": ref("user", "PUSER01", "Ana de la Cruz"),
      "start": ts(600), "end": ts(-840)},
@@ -57,7 +57,7 @@ ONCALLS = [
     {"escalation_policy": ref("escalation_policy", "PEP0002", "Payments Batch EP"), "escalation_level": 1,
      "schedule": ref("schedule", "PSCH003", "Batch On-Call"), "user": ref("user", "PUSER03", "Chen"),
      "start": ts(60), "end": ts(-1380)},
-    # Checkout EP has nobody on call (gap in coverage).
+    # nobody on call for Checkout EP
 ]
 
 
@@ -130,7 +130,6 @@ class FakePagerDuty:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self)
 
-    # -- routing --
     def route(self, req: httpx.Request) -> httpx.Response:
         p, q = req.url.path, req.url.params
         parts = p.strip("/").split("/")

@@ -1,7 +1,6 @@
-"""Ask a real LLM a question; it answers using the MCP tools.
+"""Ask Claude a question and let it answer with the MCP tools.
 
-The script starts the MCP server over stdio, gives Claude the server's tool list, and runs the
-tool-use loop: Claude picks a tool, we call it through MCP, and we send the result back.
+Starts the server over stdio, passes its tool list to Claude, and runs the tool-use loop.
 
     pip install anthropic
     export ANTHROPIC_API_KEY=...  PAGERDUTY_API_TOKEN=...

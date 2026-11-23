@@ -1,4 +1,4 @@
-"""End-to-end through the MCP layer: list tools, call them, check errors surface as isError."""
+"""Tests that go through the MCP layer."""
 
 import asyncio
 import json
@@ -47,3 +47,12 @@ def test_api_failure_becomes_tool_error_with_hint(fake_client):
     with pytest.raises(ToolError) as e:
         run(server.mcp.call_tool("find_services", {"query": "x"}))
     assert "token" in str(e.value) and "Do not retry" in str(e.value)
+
+
+def test_missing_token_becomes_tool_error_with_hint(monkeypatch):
+    monkeypatch.setattr(server, "_client", None)
+    monkeypatch.delenv("PD_MCP_FAKE", raising=False)
+    monkeypatch.setenv("PAGERDUTY_API_TOKEN", "")
+    with pytest.raises(ToolError) as e:
+        run(server.mcp.call_tool("list_open_incidents", {"urgency": "high"}))
+    assert "PAGERDUTY_API_TOKEN" in str(e.value) and "Do not retry" in str(e.value)

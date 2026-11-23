@@ -1,13 +1,10 @@
-"""Tool logic, kept separate from MCP wiring so it is easy to test and to call from a script.
+"""Tool logic, separate from the MCP layer so it can be tested and called directly.
 
-Design rules for every tool (the reader is an LLM, not a person):
-- Accept what a person would type: a service name, a fuzzy name, or an ID.
-- Return only what answers the question, flattened, with derived facts computed for the
-  model (acknowledged yes/no, age in minutes, who is level 1) instead of left for it to infer.
-- Expected states are results, not errors: "ambiguous" and "not_found" come back as data with
-  candidates and a next step. Real failures raise PagerDutyError with a hint.
-- Always say when a list was cut short (`truncated`) so the model never reports a partial
-  count as the whole picture.
+- Services can be given by name, partial name, or ID.
+- Output is small and flat. Derived fields (acknowledged, open_for_minutes, level role)
+  are computed here instead of left to the model.
+- "ambiguous" and "not_found" are returned as data with a next_step. Only API failures raise.
+- Capped lists say so (`truncated`, `summary_is_partial`).
 """
 
 from __future__ import annotations
@@ -23,8 +20,6 @@ OPEN_STATUSES = ("triggered", "acknowledged")
 URGENCIES = ("high", "low")
 TEXT_LIMIT = 500
 
-
-# ---- small helpers ---------------------------------------------------------------------
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -68,11 +63,9 @@ def normalize_contact_methods(methods: list[dict]) -> dict[str, list[dict]]:
             number = f"+{cc} {m.get('address')}" if cc else m.get("address")
             key = "phone" if kind.startswith("phone") else "sms"
             out[key].append({"number": number, "label": label})
-        # push notification methods are skipped: an agent can't use them to reach someone
+        # push notifications are skipped, an agent can't use them
     return out
 
-
-# ---- service resolution ----------------------------------------------------------------
 
 def find_services(client: PagerDutyClient, query: str, max_results: int = 10) -> dict:
     services, truncated = client.paginate("/services", "services", {"query": query}, max_items=100)
@@ -121,8 +114,6 @@ def resolve_service(client: PagerDutyClient, service: str) -> dict:
             "next_step": "Ask the user which one they mean, then call again with its id."}
 
 
-# ---- tool 1: who is on call ------------------------------------------------------------
-
 def _user_with_contacts(client: PagerDutyClient, user_id: str, cache: dict) -> dict:
     if user_id not in cache:
         data = client.get(f"/users/{user_id}", {"include[]": "contact_methods"})
@@ -144,7 +135,7 @@ def _oncall_levels(client: PagerDutyClient, ep_id: str, now: datetime,
         user_ref = oc.get("user") or {}
         uid = user_ref.get("id")
         if not uid or uid in levels.get(level, {}):
-            continue  # same person via two schedules at one level: list once
+            continue  # same person on two schedules at one level
         if with_contacts:
             user = _user_with_contacts(client, uid, cache)
             name = user.get("name") or user_ref.get("summary", "")
@@ -191,8 +182,6 @@ def who_is_on_call(client: PagerDutyClient, service: str) -> dict:
     return result
 
 
-# ---- tool 2: open incidents ------------------------------------------------------------
-
 def _incident_row(inc: dict, now: datetime) -> dict:
     acks = inc.get("acknowledgements") or []
     return {
@@ -224,7 +213,7 @@ def list_open_incidents(client: PagerDutyClient, service: str | None = None,
 
     params: dict[str, Any] = {
         "statuses[]": [status] if status else list(OPEN_STATUSES),
-        "date_range": "all",  # without this the API only returns incidents from a recent window
+        "date_range": "all",  # otherwise the API only searches a recent window
         "time_zone": "UTC",
     }
     if urgency:
@@ -240,9 +229,9 @@ def list_open_incidents(client: PagerDutyClient, service: str | None = None,
     incidents, truncated = client.paginate("/incidents", "incidents", params, max_items=500)
     now = _now()
     rows = [_incident_row(i, now) for i in incidents]
-    # Order for triage: high urgency first, then unacknowledged, then newest.
+    # high urgency, then unacknowledged, then newest (sort is stable)
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
-    rows.sort(key=lambda r: (r["urgency"] != "high", r["acknowledged"]))  # stable sort keeps newest-first
+    rows.sort(key=lambda r: (r["urgency"] != "high", r["acknowledged"]))
 
     summary = {
         "open": len(rows),
@@ -261,8 +250,6 @@ def list_open_incidents(client: PagerDutyClient, service: str | None = None,
         "showing": f"{min(limit, len(rows))} of {len(rows)}" + (" (more exist beyond the 500 fetched)" if truncated else ""),
     }
 
-
-# ---- tool 3: incident context ----------------------------------------------------------
 
 def _alert_row(alert: dict) -> dict:
     body = alert.get("body") or {}

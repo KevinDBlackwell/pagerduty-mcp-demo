@@ -1,5 +1,5 @@
-"""MCP wiring. Each tool is a thin wrapper: call the logic in tools.py, turn API failures into
-ToolError so the client sees isError=true with a message the model can act on.
+"""MCP server. Each tool wraps a function in tools.py and re-raises PagerDutyError as
+ToolError, so the client gets isError=true with the hint.
 
 Run:  PAGERDUTY_API_TOKEN=... python -m pd_mcp.server
 """
@@ -26,7 +26,7 @@ Typical flows:
 - "What's going on with incident N?" -> get_incident_context(incident="N").
 Times are UTC. Never invent people or contact details that a tool did not return."""
 
-logging.getLogger("httpx").setLevel(logging.WARNING)  # keep request logs out of the MCP stderr stream
+logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx logs every request at INFO
 
 mcp = MCPServer("pagerduty-oncall", instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
@@ -38,7 +38,7 @@ def client() -> PagerDutyClient:
     global _client
     if _client is None:
         if os.environ.get("PD_MCP_FAKE") == "1":
-            # Offline demo mode: answer from the in-memory fake instead of the real API.
+            # offline demo: use the in-memory fake
             from .fake_api import FakePagerDuty
             _client = PagerDutyClient("test-token", transport=FakePagerDuty().transport())
         else:
@@ -85,7 +85,7 @@ def list_open_incidents(
 def get_incident_context(
     incident: Annotated[str, Field(description="Incident ID (e.g. 'Q1ABC2DEF3GH') or incident number (e.g. '1234').")],
 ) -> dict:
-    """Everything needed to start investigating one incident: status, urgency, service, who is
+    """Details for one incident: status, urgency, service, who is
     assigned and who acknowledged, the first alerts with their details and links, runbook links
     found in alerts, notes, a short timeline, and the current responders."""
     return tools.get_incident_context(client(), incident)

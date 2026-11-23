@@ -18,8 +18,6 @@ def client(fake):
     return c
 
 
-# ---- helpers -------------------------------------------------------------------
-
 def test_split_name_handles_multi_word_and_single_names():
     assert tools.split_name("Ana de la Cruz") == ("Ana", "de la Cruz")
     assert tools.split_name("Chen") == ("Chen", "")
@@ -39,10 +37,8 @@ def test_contact_methods_grouped_and_push_skipped():
     assert "push" not in str(out)
 
 
-# ---- service resolution --------------------------------------------------------
-
 def test_exact_name_wins_over_partial_matches(client):
-    # "Payments" also matches "Payments Batch Jobs"; the exact name should win
+    # "payments" also matches "Payments Batch Jobs"
     r = tools.resolve_service(client, "payments")
     assert r["status"] == "ok" and r["service"]["id"] == "PSVC001"
 
@@ -64,8 +60,6 @@ def test_service_id_is_looked_up_directly(client, fake):
     assert r["service"]["name"] == "Search"
     assert fake.calls[-1].startswith("GET /services/PSVC004")
 
-
-# ---- who is on call ------------------------------------------------------------
 
 def test_on_call_returns_levels_names_and_contacts(client):
     r = tools.who_is_on_call(client, "Payments")
@@ -94,8 +88,6 @@ def test_nobody_on_call_is_explicit(client):
 def test_ambiguous_service_passes_through(client):
     assert tools.who_is_on_call(client, "pay")["status"] == "ambiguous"
 
-
-# ---- open incidents ------------------------------------------------------------
 
 def test_open_incidents_paginates_and_excludes_resolved(client, fake):
     r = tools.list_open_incidents(client, limit=100)
@@ -129,8 +121,6 @@ def test_bad_filter_values_are_explained(client):
     assert tools.list_open_incidents(client, urgency="urgent")["status"] == "invalid_argument"
 
 
-# ---- incident context ----------------------------------------------------------
-
 def test_incident_context_by_number(client):
     r = tools.get_incident_context(client, "#1001")
     assert r["incident"]["id"] == "Q00000000001"
@@ -155,8 +145,6 @@ def test_unknown_incident_is_not_found_with_next_step(client):
 def test_unknown_service_id_is_not_found(client):
     assert tools.resolve_service(client, "PZZZZZZ")["status"] == "not_found"
 
-
-# ---- client policies -----------------------------------------------------------
 
 def test_rate_limit_is_retried_using_reset_header(client, fake):
     fake.fail_next = [(429, {"ratelimit-reset": "2"})]

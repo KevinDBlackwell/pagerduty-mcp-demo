@@ -12,15 +12,34 @@ All tools are read-only.
 
 Requires Python 3.10+.
 
+macOS / Linux:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export PAGERDUTY_API_TOKEN=<token>
 
-python -m pytest -q                    # 27 tests, no network needed
+python -m pytest -q                    # 28 tests, no network needed
 python scripts/demo.py --offline       # scripted tool calls over MCP against an in-memory fake
 python scripts/demo.py                 # the same calls against the real API
 ```
+
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1             # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -r requirements.txt
+$env:PAGERDUTY_API_TOKEN = "<token>"
+
+python -m pytest -q
+python scripts\demo.py --offline
+python scripts\demo.py
+```
+
+In cmd.exe, activate with `.venv\Scripts\activate.bat` and set the token with `set PAGERDUTY_API_TOKEN=<token>`.
+
+Against the real API, the demo lists the account's services and asks about the first one that has someone on call. Pass `--service "<name>"` to pick a different one.
 
 ## Connect it to an LLM
 
@@ -30,7 +49,7 @@ python scripts/demo.py                 # the same calls against the real API
 claude mcp add pagerduty -e PAGERDUTY_API_TOKEN=$PAGERDUTY_API_TOKEN -- python -m pd_mcp.server
 ```
 
-Run that from the repo root (or set `PYTHONPATH` to it), then ask Claude Code a question.
+Run that from the repo root (or set `PYTHONPATH` to it), then ask Claude Code a question. In PowerShell, use `$env:PAGERDUTY_API_TOKEN` in place of `$PAGERDUTY_API_TOKEN`.
 
 **Claude Desktop** (`claude_desktop_config.json`)
 
@@ -47,6 +66,8 @@ Run that from the repo root (or set `PYTHONPATH` to it), then ask Claude Code a 
 }
 ```
 
+On Windows the command is `C:\\path\\to\\.venv\\Scripts\\python.exe` (backslashes doubled in JSON), and the config file is in `%APPDATA%\Claude\`.
+
 **MCP Inspector:** `npx @modelcontextprotocol/inspector -e PAGERDUTY_API_TOKEN=<token> python -m pd_mcp.server`
 
 **Scripted agent loop:** `scripts/agent.py` starts the server over stdio, hands Claude the tool list, and runs the tool-use loop.
@@ -56,6 +77,8 @@ pip install anthropic && export ANTHROPIC_API_KEY=...
 python scripts/agent.py "Any open high-urgency incidents? Has anyone acknowledged them?"
 python scripts/agent.py --offline "Who's on call for Payments?"   # fake PagerDuty, real model
 ```
+
+In PowerShell, set the key with `$env:ANTHROPIC_API_KEY = "..."`.
 
 ## Tools
 
@@ -104,12 +127,12 @@ All in `pd_mcp/client.py`, so every tool gets the same behavior:
 
 ## Testing
 
-`python -m pytest -q` runs 27 tests with no network:
+`python -m pytest -q` runs 28 tests with no network:
 
 - Unit tests for name splitting and contact-method normalization.
 - Tool tests against the fake API: name resolution (exact, ambiguous, not found, by ID), on-call levels and de-duplication, contact lookups cached, nobody on call, pagination across pages, triage order, filters, clipping, not-found incidents.
 - Client policy tests: 429 retried using the reset header, 5xx retried then a retryable error, 401 not retried, truncation at the cap.
-- MCP-level tests: tools are listed read-only with descriptions, calls return JSON, schema rejects bad enums, API failures surface as tool errors with hints.
+- MCP-level tests: tools are listed read-only with descriptions, calls return JSON, schema rejects bad enums, API failures and a missing token surface as tool errors with hints.
 
 ## Before letting an agent use this on a real customer account
 
@@ -128,8 +151,18 @@ All in `pd_mcp/client.py`, so every tool gets the same behavior:
 
 ## How I used AI
 
-<!-- Kevin: replace this with your own account before submitting. Be specific. -->
-I used Claude as a coding assistant to draft the client, tools and tests. Decisions I made and can defend: _[edit: e.g. names over IDs, results-not-errors for ambiguous/not found, pre-computed fields, the pagination cap, the PII stance]_. I reviewed every function, ran the tests and the demo, and changed _[edit: what you changed]_.
+I used Claude (Anthropic) as a pair programmer for this assignment.
+
+**What Claude did:** drafted the PagerDuty client, the four tools, the in-memory fake API, the tests, and the two demo scripts, based on the assignment and PagerDuty's API reference.
+
+**What I did:**
+
+- Set the requirements: read-only tools, inputs a person would actually type (service names, not IDs), and output shaped for a model to read rather than a person.
+- Reviewed the design decisions and kept the ones I agree with and can defend: ambiguous and not-found results returned as data with a next step instead of errors, pre-computed fields like `acknowledged` and `open_for_minutes`, capped pagination that says when it truncated, and one client that owns retries and rate limits.
+- Ran the tests and both demos myself on Windows against PagerDuty's example account.
+- Fixed what that run exposed. The first live run returned "not found" because the demo was hard-coded to a service name from the fake data, so the demo now lists the account's services and uses a real one. Setup steps also assumed macOS or Linux, so I added Windows instructions.
+
+**What I checked by hand:** that the real API matches what the fake assumes, especially current on-calls from `/oncalls`, contact methods from `/users/{id}?include[]=contact_methods`, and looking up an incident by its number.
 
 ## Layout
 

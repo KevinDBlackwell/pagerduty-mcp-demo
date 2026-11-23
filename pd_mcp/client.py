@@ -1,12 +1,7 @@
-"""Thin PagerDuty REST client: auth, pagination, retries, and errors an LLM can act on.
+"""PagerDuty REST client shared by all the tools.
 
-Every tool goes through this one class, so the policies live in one place:
-- Pagination: PagerDuty's classic offset/limit paging, followed until `more` is false
-  or we hit a hard cap. The cap keeps one tool call from pulling a huge account.
-- Rate limits: on 429, wait for the reset the API reports (or back off exponentially),
-  then retry a few times. Never retry forever.
-- Errors: HTTP failures become PagerDutyError with a short message and a hint the
-  model can use to decide what to do next.
+Follows offset/limit pagination up to a per-call cap, retries 429s, 5xxs and timeouts
+a few times, and turns HTTP failures into PagerDutyError with a hint for the model.
 """
 
 from __future__ import annotations
@@ -27,7 +22,7 @@ MAX_RETRIES = 3
 
 @dataclass
 class PagerDutyError(Exception):
-    """An API failure, phrased for the model that will read it."""
+    """API failure with a message and a hint the model can act on."""
 
     status: int | None
     message: str
@@ -69,8 +64,12 @@ class PagerDutyClient:
     ):
         token = token or os.environ.get("PAGERDUTY_API_TOKEN")
         if not token:
-            raise RuntimeError("Set PAGERDUTY_API_TOKEN to a PagerDuty REST API token.")
-        self._sleep = sleep  # injectable so tests don't actually wait
+            raise PagerDutyError(
+                None,
+                "No PagerDuty API token is configured (PAGERDUTY_API_TOKEN is unset or empty).",
+                "Tell the user to set PAGERDUTY_API_TOKEN in the MCP server's environment and restart it. Do not retry.",
+            )
+        self._sleep = sleep  # tests pass a no-op
         self._http = httpx.Client(
             base_url=base_url,
             headers={
@@ -81,8 +80,6 @@ class PagerDutyClient:
             timeout=httpx.Timeout(10.0, connect=5.0),
             transport=transport,
         )
-
-    # ---- single request with retries -------------------------------------------------
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         last_status = None
@@ -115,12 +112,11 @@ class PagerDutyClient:
 
     @staticmethod
     def _backoff(attempt: int) -> float:
-        # 1s, 2s, 4s ... plus jitter so many clients don't retry in lockstep
+        # 1, 2, 4, 8s plus jitter
         return min(2 ** attempt, 8) + random.uniform(0, 0.5)
 
     def _retry_delay(self, resp: httpx.Response, attempt: int) -> float:
-        # PagerDuty sends ratelimit-reset (seconds until the window resets) on 429s.
-        # Retry-After is honored too, in case a proxy in between sets it.
+        # PagerDuty sends ratelimit-reset on 429s. Retry-After is checked too in case a proxy sets it.
         for header in ("ratelimit-reset", "retry-after"):
             value = resp.headers.get(header)
             if value:
@@ -129,8 +125,6 @@ class PagerDutyClient:
                 except ValueError:
                     pass
         return self._backoff(attempt)
-
-    # ---- pagination ------------------------------------------------------------------
 
     def paginate(
         self,
