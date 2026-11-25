@@ -19,17 +19,20 @@ from pydantic import Field
 from . import tools
 from .client import PagerDutyClient, PagerDutyError
 
-INSTRUCTIONS = """Read-only tools for a PagerDuty account's on-call coverage and open incidents.
+INSTRUCTIONS = """Tools for a PagerDuty account's on-call coverage and open incidents. All are read-only except acknowledge_incident.
 Typical flows:
 - "Who's on call for X?" -> who_is_on_call(service="X"). If it returns status "ambiguous", ask the user which candidate they mean.
 - "Any open high-urgency incidents? Has anyone acknowledged them?" -> list_open_incidents(urgency="high"). Use summary counts and each incident's acknowledged / acknowledged_by fields.
 - "What's going on with incident N?" -> get_incident_context(incident="N").
+- "Acknowledge incident N" -> ask the user for their PagerDuty login email, call acknowledge_incident(incident="N", requester_email=..., dry_run=true), show the user the would_do preview, and only after they explicitly confirm call it again with dry_run=false.
 Times are UTC. Never invent people or contact details that a tool did not return."""
 
 logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx logs every request at INFO
 
 mcp = MCPServer("pagerduty-oncall", instructions=INSTRUCTIONS)
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
+# Acknowledging changes incident state but deletes nothing, and acknowledging twice has the same effect.
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
 
 _client: PagerDutyClient | None = None
 
@@ -98,6 +101,18 @@ def find_services(
 ) -> dict:
     """Search services by name. Use when a service name is ambiguous or not found."""
     return tools.find_services(client(), query)
+
+
+@mcp.tool(annotations=WRITE)
+@as_tool_errors
+def acknowledge_incident(
+    incident: Annotated[str | int, Field(description="Incident ID or number (e.g. 'Q1ABC2DEF3GH', 1001 or '#1001').")],
+    requester_email: Annotated[str, Field(description="PagerDuty login email of the person acknowledging. Always ask the user for this; never guess it.")],
+    dry_run: Annotated[bool, Field(description="Defaults to true to prevent an accidental write. Set false only after the user has seen the preview and confirmed it is correct.")] = True,
+) -> dict:
+    """Acknowledge an incident on behalf of a PagerDuty user, which stops further paging.
+    By default this is a dry run that changes nothing and returns a would_do preview to show the user."""
+    return tools.acknowledge_incident(client(), incident, requester_email, dry_run)
 
 
 def main() -> None:

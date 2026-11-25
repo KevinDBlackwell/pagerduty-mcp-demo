@@ -117,6 +117,8 @@ class FakePagerDuty:
     def __init__(self):
         self.calls: list[str] = []
         self.fail_next: list[tuple[int, dict]] = []  # (status, headers) consumed one per request
+        self.writes: list[dict] = []  # PUTs received: {"path", "from", "body"}
+        self._status: dict[str, str] = {}  # incident status changes, kept per instance so tests don't leak
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(f"{request.method} {request.url.path}?{request.url.query.decode()}")
@@ -157,6 +159,10 @@ class FakePagerDuty:
             inc = next((i for i in INCIDENTS if i["id"] == key or str(i["incident_number"]) == key), None)
             if not inc:
                 return self.not_found()
+            if inc["id"] in self._status:
+                inc = {**inc, "status": self._status[inc["id"]]}
+            if req.method == "PUT" and len(parts) == 2:
+                return self.update_incident(req, inc)
             if len(parts) == 2:
                 return self.ok({"incident": inc})
             sub = parts[2]
@@ -165,6 +171,25 @@ class FakePagerDuty:
                 return self.ok({"notes": data})  # notes are not paginated in the real API
             return self.page(data, sub, q)
         return self.not_found()
+
+    def update_incident(self, req: httpx.Request, inc: dict) -> httpx.Response:
+        # like the real API: writes need a From header and an incident_reference body
+        sender = req.headers.get("From", "")
+        body = json.loads(req.content or b"{}")
+        self.writes.append({"path": req.url.path, "from": sender, "body": body})
+        change = body.get("incident") or {}
+        if "@" not in sender or change.get("type") != "incident_reference":
+            return httpx.Response(400, json={"error": {"message": "Invalid Input Provided", "code": 2001}})
+        if inc["status"] == "resolved":
+            return httpx.Response(400, json={"error": {"message": "Incident Already Resolved", "code": 2001}})
+        status = change.get("status", inc["status"])
+        self._status[inc["id"]] = status
+        updated = {**inc, "status": status}
+        if status == "acknowledged":
+            user = next((u for u in USERS.values() if u["email"] == sender), None)
+            who = ref("user", user["id"], user["name"]) if user else ref("user", "PUNKNWN", sender)
+            updated["acknowledgements"] = [{"at": ts(0), "acknowledger": who}]
+        return self.ok({"incident": updated})
 
     def page(self, rows, key, q):
         limit = min(int(q.get("limit", 25)), self.PAGE_MAX)

@@ -341,3 +341,52 @@ def get_incident_context(client: PagerDutyClient, incident: str,
         "next_step_hint": ("Use who_is_on_call with the service name for full contact details. "
                            "Use the incident url to open it in PagerDuty."),
     }
+
+
+def acknowledge_incident(client: PagerDutyClient, incident: str | int, requester_email: str,
+                         dry_run: bool = True) -> dict:
+    """Acknowledge an incident on behalf of a PagerDuty user. Defaults to a dry run that only
+    describes the write; the write happens only when dry_run is False."""
+    ref = str(incident if incident is not None else "").strip().lstrip("#").strip()
+    if not ref:
+        return {"status": "not_found", "message": "No incident was given.",
+                "next_step": "Call list_open_incidents to find the incident ID or number."}
+
+    email = (requester_email or "").strip()
+    if "@" not in email:
+        return {"status": "invalid_email",
+                "message": f"'{requester_email}' is not a valid email address.",
+                "next_step": "Ask the user for the PagerDuty login email of the person acknowledging."}
+
+    try:
+        inc = client.get(f"/incidents/{ref}")["incident"]
+    except PagerDutyError as e:
+        if e.status != 404:
+            raise
+        return {"status": "not_found", "message": f"No incident matches '{incident}'.",
+                "next_step": "Call list_open_incidents to find the incident's ID or number."}
+
+    number, title = inc.get("incident_number"), _clip(inc.get("title"), 200)
+    target = {"id": inc["id"], "number": number, "title": title, "current_status": inc.get("status")}
+    if inc.get("status") == "resolved":
+        return {"status": "invalid_state", "incident": target,
+                "message": f"Incident #{number} is already resolved and cannot be acknowledged.",
+                "next_step": "Tell the user. Nothing was changed."}
+
+    if dry_run:
+        return {
+            "status": "dry_run",
+            "incident": target,
+            "would_do": f"Acknowledge #{number} {title} on behalf of {email}. This stops further paging.",
+            "next_step": ("Show this to the user and call again with dry_run=false "
+                          "only after they explicitly confirm."),
+        }
+
+    body = {"incident": {"type": "incident_reference", "status": "acknowledged"}}
+    updated = client.put(f"/incidents/{inc['id']}", body, from_email=email)["incident"]
+    return {
+        "status": "acknowledged",
+        "as_of": _now().isoformat(timespec="seconds"),
+        "acknowledged_by_request_of": email,
+        "incident": _incident_row(updated, _now()),
+    }

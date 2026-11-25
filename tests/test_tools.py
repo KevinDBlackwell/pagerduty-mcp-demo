@@ -171,3 +171,72 @@ def test_bad_token_is_not_retried():
 def test_pagination_cap_marks_truncation(client):
     items, truncated = client.paginate("/incidents", "incidents", {"statuses[]": ["acknowledged"]}, max_items=10)
     assert len(items) == 10 and truncated is True
+
+
+# --- acknowledge_incident ---
+
+def test_get_still_retries_after_send_refactor(client, fake):
+    fake.fail_next = [(429, {"ratelimit-reset": "2"})]
+    assert client.get("/services/PSVC001")["service"]["name"] == "Payments"
+    assert client.sleeps == [2.0]
+
+
+def test_put_sends_from_header_and_retries_429(client, fake):
+    fake.fail_next = [(429, {"ratelimit-reset": "1"})]
+    body = {"incident": {"type": "incident_reference", "status": "acknowledged"}}
+    client.put("/incidents/Q00000000001", body, from_email="ana@northwind.example")
+    assert client.sleeps == [1.0]
+    assert fake.writes == [{"path": "/incidents/Q00000000001", "from": "ana@northwind.example", "body": body}]
+
+
+def test_put_failure_has_hint(client, fake):
+    fake.fail_next = [(403, {})]
+    with pytest.raises(PagerDutyError) as e:
+        client.put("/incidents/Q00000000001", {}, from_email="a@b.c")
+    assert e.value.status == 403 and e.value.hint
+
+
+def test_ack_defaults_to_dry_run_and_writes_nothing(client, fake):
+    r = tools.acknowledge_incident(client, 1001, "ana@northwind.example")
+    assert r["status"] == "dry_run"
+    assert r["would_do"] == ("Acknowledge #1001 Payments API 5xx rate above 5% on behalf of "
+                             "ana@northwind.example. This stops further paging.")
+    assert "dry_run=false" in r["next_step"] and "confirm" in r["next_step"]
+    assert fake.writes == []
+    assert not any(c.startswith("PUT") for c in fake.calls)
+
+
+@pytest.mark.parametrize("ref", [1001, "1001", "#1001", " #1001 ", "Q00000000001"])
+def test_ack_accepts_number_hash_or_id(client, ref):
+    r = tools.acknowledge_incident(client, ref, "ana@northwind.example")
+    assert r["status"] == "dry_run" and r["incident"]["id"] == "Q00000000001"
+
+
+@pytest.mark.parametrize("email", ["", "ana", "ana.northwind.example", None])
+def test_ack_rejects_invalid_email_before_any_call(client, fake, email):
+    r = tools.acknowledge_incident(client, 1001, email, dry_run=False)
+    assert r["status"] == "invalid_email"
+    assert fake.calls == []
+
+
+def test_ack_unknown_incident_points_to_list_open_incidents(client, fake):
+    r = tools.acknowledge_incident(client, "#9999", "ana@northwind.example", dry_run=False)
+    assert r["status"] == "not_found" and "list_open_incidents" in r["next_step"]
+    assert fake.writes == []
+
+
+def test_ack_writes_when_dry_run_false(client, fake):
+    r = tools.acknowledge_incident(client, "#1001", "ben@northwind.example", dry_run=False)
+    assert r["status"] == "acknowledged"
+    assert r["incident"]["acknowledged"] is True
+    assert r["incident"]["acknowledged_by"] == ["Ben Okafor"]
+    (w,) = fake.writes
+    assert w["path"] == "/incidents/Q00000000001"  # by ID, even when given a number
+    assert w["from"] == "ben@northwind.example"
+    assert w["body"] == {"incident": {"type": "incident_reference", "status": "acknowledged"}}
+
+
+def test_ack_resolved_incident_is_refused_without_write(client, fake):
+    r = tools.acknowledge_incident(client, 1004, "ana@northwind.example", dry_run=False)
+    assert r["status"] == "invalid_state"
+    assert fake.writes == []

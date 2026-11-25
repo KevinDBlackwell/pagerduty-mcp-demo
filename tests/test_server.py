@@ -22,12 +22,42 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_tools_are_listed_read_only_with_descriptions():
+WRITE_TOOLS = {"acknowledge_incident"}
+
+
+def test_tools_are_listed_with_descriptions_and_only_ack_writes():
     listed = {t.name: t for t in run(server.mcp.list_tools())}
-    assert {"who_is_on_call", "list_open_incidents", "get_incident_context", "find_services"} <= set(listed)
-    for t in listed.values():
-        assert t.annotations.read_only_hint is True
+    assert {"who_is_on_call", "list_open_incidents", "get_incident_context", "find_services",
+            "acknowledge_incident"} <= set(listed)
+    for name, t in listed.items():
+        assert t.annotations.read_only_hint is (name not in WRITE_TOOLS)
         assert len(t.description) > 40
+
+
+def test_acknowledge_schema_defaults_to_dry_run():
+    ack = next(t for t in run(server.mcp.list_tools()) if t.name == "acknowledge_incident")
+    props = ack.input_schema["properties"]
+    assert props["dry_run"]["default"] is True
+    assert "ask the user" in props["requester_email"]["description"].lower()
+
+
+def test_acknowledge_via_mcp_is_dry_run_unless_told_otherwise(fake_client):
+    result = run(server.mcp.call_tool("acknowledge_incident",
+                                      {"incident": 1001, "requester_email": "ana@northwind.example"}))
+    assert json.loads(result.content[0].text)["status"] == "dry_run"
+    assert fake_client.writes == []
+    result = run(server.mcp.call_tool("acknowledge_incident",
+                                      {"incident": "#1001", "requester_email": "ana@northwind.example",
+                                       "dry_run": False}))
+    assert json.loads(result.content[0].text)["status"] == "acknowledged"
+    assert len(fake_client.writes) == 1
+
+
+def test_acknowledge_api_failure_becomes_tool_error(fake_client):
+    fake_client.fail_next = [(403, {})]
+    with pytest.raises(ToolError):
+        run(server.mcp.call_tool("acknowledge_incident",
+                                 {"incident": 1001, "requester_email": "ana@northwind.example"}))
 
 
 def test_call_tool_returns_structured_content():

@@ -82,10 +82,26 @@ class PagerDutyClient:
         )
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._send("GET", path, params=params)
+
+    def put(self, path: str, body: dict[str, Any], from_email: str) -> dict[str, Any]:
+        """PUT a JSON body. PagerDuty requires a From header (a user's login email) on writes."""
+        return self._send("PUT", path, json=body, headers={"From": from_email})
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """One request with retries on 429s, 5xxs and timeouts. Failures raise PagerDutyError with a hint."""
         last_status = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                resp = self._http.get(path, params=params)
+                resp = self._http.request(method, path, params=params, json=json, headers=headers)
             except httpx.TimeoutException:
                 last_status = None
                 if attempt < MAX_RETRIES:
